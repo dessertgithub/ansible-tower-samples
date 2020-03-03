@@ -1,0 +1,79 @@
+---
+- hosts: kvm
+  gather_facts: no
+  tags: provision
+  become: true
+  vars:
+    kvm_vm_hostname: "{{ idm_hostname }}"
+    kvm_vm_root_pwd: "{{ idm_ssh_pwd }}"
+    kvm_vm_base_img: "{{ idm_base_img }}"
+    kvm_vm_vcpus: "{{ idm_vcpus }}"
+    kvm_vm_ram: "{{ idm_ram }}"
+    kvm_vm_os_disk_name: "{{ idm_os_disk_name }}"
+    kvm_vm_os_disk_size: "{{ idm_os_disk_size }}"
+    kvm_vm_nics: "{{ idm_nics }}"
+  tasks:
+    - name: Create KVM IdM VM
+      include_role:
+        name: RedHatGov.kvm_vm
+      tags: provision
+
+    - name: Add IdM to ansible inventory
+      add_host:
+        name: "{{ idm_hostname }}"
+        ansible_host: "{{ idm_public_ip }}"
+        rhsm_consumer_name: "{{ idm_hostname }}.{{ domain }}"
+      changed_when: no
+      tags: provision
+
+    - name: waiting for IDM ssh to come online
+      wait_for:
+        host: "{{ idm_public_ip }}"
+        port: 22
+        state: started
+        delay: 10
+        connect_timeout: 300
+        sleep: 5
+      tags: provision
+
+    - name: pause 30 seconds for boot
+      pause:
+        seconds: 30
+
+- hosts: idm
+  become: true
+  tasks:
+    - name: Register to RHSM
+      vars:
+        rhsm_consumer_name: "{{ idm_hostname }}.{{ domain }}"
+        rhsm_repos: "{{ idm_repos }}"
+      include_role:
+        name: RedHatGov.rhsm
+      when: register_rhn
+      tags: install
+
+    - name: Unregister system from RHN
+      include_role:
+        name: RedHatGov.rhsm
+        tasks_from: unregister
+      when: not register_rhn
+      tags: install
+
+    - name: enable the needed rhel repositories
+      yum_repository:
+        name: "{{ item }}"
+        description: "{{ item }}"
+        baseurl: "http://{{ content_public_ip }}/repos/{{ item }}"
+        gpgcheck: no
+        enabled: yes
+        file: rhn-local
+        state: present
+      with_items:
+        - "{{ idm_repos }}"
+      when: not register_rhn
+      tags: install
+
+    - name: Install IDM
+      include_role:
+        name: RedHatGov.idm
+      tags: install
